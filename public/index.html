@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="uk">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Моніторинг показника</title>
+    <style>
+        body {
+            font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial;
+            margin: 2rem;
+        }
+
+        .card {
+            border: 1px solid #ddd;
+            border-radius: 12px;
+            padding: 1rem 1.25rem;
+            max-width: 760px;
+        }
+
+        .row {
+            display: flex;
+            gap: 1rem;
+            align-items: baseline;
+            flex-wrap: wrap;
+        }
+
+        .muted {
+            color: #666;
+        }
+
+        .value {
+            font-size: 2.25rem;
+            font-weight: 700;
+        }
+
+        .ok {
+            color: #0a7f27;
+        }
+
+        .bad {
+            color: #b00020;
+        }
+
+        .chip {
+            display: inline-block;
+            padding: .2rem .6rem;
+            border: 1px solid #ddd;
+            border-radius: 999px;
+            font-size: .85rem;
+        }
+
+        #log {
+            margin-top: 1rem;
+            font-family: ui-monospace, Menlo, Consolas, monospace;
+            white-space: pre-wrap;
+        }
+
+        button,
+        input {
+            cursor: pointer;
+        }
+
+        .controls {
+            margin-top: 1rem;
+            display: grid;
+            grid-template-columns: 1fr 1fr auto;
+            gap: .5rem;
+            align-items: center;
+        }
+
+        .controls label {
+            font-size: .9rem;
+            color: #333;
+        }
+
+        .controls input {
+            padding: .45rem .6rem;
+            border: 1px solid #ccc;
+            border-radius: 8px;
+            width: 100%;
+        }
+
+        .controls button {
+            padding: .5rem .75rem;
+            border: 1px solid #ccc;
+            border-radius: 10px;
+            background: #fff;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="card">
+        <h1>Моніторинг показника</h1>
+
+        <div class="row">
+            <div>Поточне значення: <span id="val" class="value">—</span></div>
+            <div class="chip">Поріг: <span id="thr">—</span></div>
+            <div class="chip">Інтервал: <span id="interval">—</span></div>
+        </div>
+
+        <div class="muted" id="status">Очікую дані…</div>
+
+        <div class="row" style="margin-top: .75rem;">
+            <button id="test">Перевірити звук</button>
+            <button id="mute">🔇 Вимкнути звук</button>
+            <button id="unmute">🔊 Увімкнути звук</button>
+            <button id="checkNow">🔄 Опитати зараз</button>
+        </div>
+
+        <div class="controls">
+            <label>Новий поріг (THRESHOLD): <input type="number" step="any" id="thresholdInput"
+                    placeholder="наприклад, 42.5" /></label>
+            <label>Інтервал, сек: <input type="number" min="1" step="1" id="intervalInput"
+                    placeholder="наприклад, 15" /></label>
+            <div style="display:flex; gap:.5rem;">
+                <button id="saveThreshold">Зберегти поріг</button>
+                <button id="saveInterval">Зберегти інтервал</button>
+            </div>
+        </div>
+
+        <div id="log"></div>
+    </div>
+
+    <script>
+        // ---- звук
+        let audioCtx; let muted = false;
+        function beep(durationMs = 1200, freq = 660) {
+            if (muted) return;
+            if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            const o = audioCtx.createOscillator();
+            const g = audioCtx.createGain();
+            o.connect(g).connect(audioCtx.destination);
+            o.type = "sine"; o.frequency.value = freq;
+            g.gain.setValueAtTime(0.001, audioCtx.currentTime);
+            g.gain.exponentialRampToValueAtTime(0.2, audioCtx.currentTime + 0.05);
+            o.start();
+            setTimeout(() => {
+                g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.02);
+                o.stop(audioCtx.currentTime + 0.05);
+            }, durationMs);
+        }
+
+        // ---- елементи
+        const valEl = document.getElementById("val");
+        const thrEl = document.getElementById("thr");
+        const intervalEl = document.getElementById("interval");
+        const statusEl = document.getElementById("status");
+        const logEl = document.getElementById("log");
+        const thresholdInput = document.getElementById("thresholdInput");
+        const intervalInput = document.getElementById("intervalInput");
+
+        function addLog(msg) {
+            const t = new Date().toLocaleTimeString();
+            logEl.textContent = `[${t}] ${msg}\n` + logEl.textContent;
+        }
+
+        document.getElementById("test").onclick = () => beep();
+        document.getElementById("mute").onclick = () => { muted = true; addLog("🔇 Звук вимкнено"); };
+        document.getElementById("unmute").onclick = () => { muted = false; addLog("🔊 Звук увімкнено"); };
+        document.getElementById("checkNow").onclick = () => ws.send(JSON.stringify({ type: "checkNow" }));
+
+        // ---- WS
+        const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}`);
+        ws.onopen = () => { statusEl.textContent = "Підключено до сервера"; ws.send(JSON.stringify({ type: "getConfig" })); };
+        ws.onmessage = (ev) => {
+            const data = JSON.parse(ev.data);
+
+            if (data.type === "config") {
+                if (typeof data.threshold === "number") {
+                    thrEl.textContent = data.threshold;
+                    thresholdInput.value = data.threshold;
+                }
+                if (typeof data.pollIntervalMs === "number") {
+                    intervalEl.textContent = `${Math.round(data.pollIntervalMs / 1000)} с`;
+                    intervalInput.value = Math.round(data.pollIntervalMs / 1000);
+                }
+            }
+            if (data.type === "metric") {
+                const v = data.value;
+                thrEl.textContent = data.threshold;
+                valEl.textContent = isNaN(v) ? "—" : v;
+                const bad = !isNaN(v) && v < data.threshold;
+                valEl.classList.toggle("bad", bad);
+                valEl.classList.toggle("ok", !bad);
+                statusEl.textContent = `Оновлено: ${new Date(data.ts).toLocaleString()}`;
+            }
+            if (data.type === "alert") { addLog(`⚠️ Значення ${data.value} нижче порогу ${data.threshold}`); beep(); }
+            if (data.type === "error") addLog(`❌ Помилка: ${data.message}`);
+            if (data.type === "info") addLog(`ℹ️ ${data.message}`);
+        };
+        ws.onclose = () => { statusEl.textContent = "З'єднання розірвано"; };
+
+        // ---- Керування порогом / інтервалом
+        document.getElementById("saveThreshold").onclick = () => {
+            const v = Number(thresholdInput.value);
+            if (!Number.isNaN(v)) ws.send(JSON.stringify({ type: "setThreshold", value: v }));
+        };
+        document.getElementById("saveInterval").onclick = () => {
+            const sec = Number(intervalInput.value);
+            if (!Number.isNaN(sec) && sec >= 1) {
+                ws.send(JSON.stringify({ type: "setPollIntervalMs", value: sec * 1000 }));
+            }
+        };
+
+        // ---- “антизасинання” для безкоштовних хостів: пінгуємо бекенд
+        const PING_INTERVAL_MS = 4 * 60 * 1000; // 4 хвилини
+        setInterval(() => {
+            fetch("/ping", { cache: "no-store" })
+                .then(() => console.log(`[ping] ${new Date().toLocaleTimeString()}`))
+                .catch(err => console.warn("[ping error]", err));
+        }, PING_INTERVAL_MS);
+    </script>
+</body>
+
+</html>
